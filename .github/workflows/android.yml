@@ -22,14 +22,20 @@ jobs:
         distribution: 'temurin'
         cache: 'gradle'
 
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+
     - name: Generate Gradle Wrapper
       run: gradle wrapper --gradle-version 8.2
 
     - name: Grant Execute Permission to gradlew
       run: chmod +x gradlew
 
+    - name: Accept Android SDK Licenses
+      run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
     - name: Compile and Build Debug APK
-      run: ./gradlew assembleDebug
+      run: ./gradlew assembleDebug --stacktrace
 
     - name: Upload compiled APK Artifact
       uses: actions/upload-artifact@v4

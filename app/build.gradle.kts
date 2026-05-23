@@ -77,8 +77,19 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 
-    // OpenCV (Standalone Android SDK wrapper)
-    implementation("org.opencv:opencv-android:4.9.0")
+    // ── OpenCV ──────────────────────────────────────────────────────────
+    // FIX: The old 'org.opencv:opencv-android:4.9.0' artifact does NOT
+    // exist on Maven Central or Google Maven, causing CI failures.
+    //
+    // 'com.quickbirdstudios:opencv-android' IS published on Maven Central
+    // and bundles pre-built native .so libs for all ABIs (arm64-v8a,
+    // armeabi-v7a, x86, x86_64). No local SDK install or custom Maven
+    // repo is needed.  Version 4.5.3.0 covers all APIs we use:
+    //   Imgproc (GaussianBlur, morphologyEx, cvtColor, adaptiveThreshold,
+    //            findContours, boundingRect, contourArea)
+    //   Core    (inRange, bitwise_and)
+    // ────────────────────────────────────────────────────────────────────
+    implementation("com.quickbirdstudios:opencv-android:4.5.3.0")
 
     // Room DB with KSP compiler
     val roomVersion = "2.6.1"
