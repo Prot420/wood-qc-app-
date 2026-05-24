@@ -2,11 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- CAMERA permission is essential for live frame analysis -->
+    <!-- CAMERA: Live frame analysis -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- CRITICAL SECURITY FOCUS: Absolute Offline Boundary. -->
-    <!-- DO NOT declare android.permission.INTERNET or any network/WiFi permissions. -->
+    <!-- STORAGE: Save defect photos to Pictures/WoodQC/
+         maxSdkVersion=28 because API 29+ uses scoped storage (MediaStore)
+         which needs no permission for app's own media files -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <!-- CRITICAL: No INTERNET permission — app stays 100% offline -->
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
@@ -27,6 +33,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
     </application>
 
 </manifest>

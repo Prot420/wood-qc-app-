@@ -18,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
 import com.woodqc.app.audio.FeedbackAudio
 import com.woodqc.app.camera.CameraAnalyzer
+import com.woodqc.app.ui.PinLockScreen
 import com.woodqc.app.ui.WoodenQCApp
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -27,49 +28,64 @@ class MainActivity : ComponentActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private var feedbackAudio: FeedbackAudio? = null
     private var cameraAnalyzer: CameraAnalyzer? = null
-
     private var previewView: PreviewView? = null
     private var isCameraBound = false
 
     private var selectedCategory by mutableStateOf("Salad Bowl")
     private var selectedWoodType by mutableStateOf("Mango")
-    private var analyzerState by mutableStateOf<CameraAnalyzer.AnalyzerState>(CameraAnalyzer.AnalyzerState.Scanning)
+    private var analyzerState by mutableStateOf<CameraAnalyzer.AnalyzerState>(
+        CameraAnalyzer.AnalyzerState.Scanning
+    )
+
+    // Phase 1: PIN auth state
+    private var isUnlocked by mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        if (isGranted) {
-            setupCamera()
-        } else {
-            Toast.makeText(this, "Camera permission is required to analyze wooden components.", Toast.LENGTH_LONG).show()
-        }
+    ) { isGranted ->
+        if (isGranted) setupCamera()
+        else Toast.makeText(
+            this,
+            "Camera permission required for wood inspection.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize Audio alerts
         feedbackAudio = FeedbackAudio(this)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // Create the Analyzer instance linking context, audio feedback, dropdown inputs, and Compose UI update callbacks
         cameraAnalyzer = CameraAnalyzer(
             context = this,
             feedbackAudio = feedbackAudio!!,
             selectedCategory = { selectedCategory },
             selectedWoodType = { selectedWoodType },
-            onStateChanged = { newState ->
-                analyzerState = newState
-            }
+            onStateChanged = { newState -> analyzerState = newState }
         )
 
         setContent {
+            // ── Phase 1: Show PIN screen until authenticated ──────────────
+            if (!isUnlocked) {
+                PinLockScreen(onUnlocked = { isUnlocked = true })
+                return@setContent
+            }
+            // ─────────────────────────────────────────────────────────────
+
             WoodenQCApp(
                 analyzerState = analyzerState,
                 onResumeScan = { cameraAnalyzer?.resumeScan() },
+                onPhotoCapture = {
+                    // Phase 1: Trigger single-frame photo capture
+                    cameraAnalyzer?.triggerPhotoCapture()
+                },
                 onPreviewViewCreated = { view ->
                     previewView = view
-                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                    if (ContextCompat.checkSelfPermission(
+                            this, Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
                         setupCamera()
                     } else {
                         requestPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -89,34 +105,26 @@ class MainActivity : ComponentActivity() {
         cameraProviderFuture.addListener({
             try {
                 val cameraProvider = cameraProviderFuture.get()
-                
-                // Bind Preview UseCase
+
                 val preview = Preview.Builder().build().apply {
                     setSurfaceProvider(previewView?.surfaceProvider)
                 }
 
-                // Bind Image Analysis UseCase
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setTargetResolution(Size(640, 480))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
-
                 imageAnalysis.setAnalyzer(cameraExecutor, cameraAnalyzer!!)
 
-                // Select back camera
-                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-                // Unbind previous instances and bind new lifecycle flow
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
                     this,
-                    cameraSelector,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     imageAnalysis
                 )
-                
                 isCameraBound = true
-                Log.d("MainActivity", "CameraX UseCases bound successfully.")
+                Log.d("MainActivity", "CameraX bound successfully.")
             } catch (e: Exception) {
                 Log.e("MainActivity", "Camera binding failed: ${e.message}", e)
             }
@@ -125,7 +133,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Graceful release of critical system assets and custom analyzer threads
         cameraExecutor.shutdown()
         cameraAnalyzer?.shutdown()
         feedbackAudio?.release()
