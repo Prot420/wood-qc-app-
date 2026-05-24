@@ -93,7 +93,7 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 
     // ✅ FIXED: JitPack-hosted OpenCV wrapper — CI-proven, AGP 8.x compatible
-    implementation("com.github.jeziellago:opencvdroid:4.1.0")
+    implementation("org.opencv:opencv:4.9.0")
 
     val roomVersion = "2.6.1"
     implementation("androidx.room:room-runtime:$roomVersion")
