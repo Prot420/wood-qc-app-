@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Wood QC APK
 
 on:
   push:
@@ -12,33 +12,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: 'gradle'
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
+      - name: Install Gradle 8.6
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.6'
 
-    - name: Generate Gradle Wrapper
-      run: gradle wrapper --gradle-version 8.2
+      - name: Generate Gradle Wrapper
+        run: gradle wrapper --gradle-version 8.6
 
-    - name: Grant Execute Permission to gradlew
-      run: chmod +x gradlew
+      - name: Grant Execute Permission to gradlew
+        run: chmod +x gradlew
 
-    - name: Accept Android SDK Licenses
-      run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+      - name: Accept Android SDK Licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
-    - name: Compile and Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace
+      - name: Build Debug APK
+        run: |
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            --info \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=512m"
 
-    - name: Upload compiled APK Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: wood-qc-debug-apk
-        path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wood-qc-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
