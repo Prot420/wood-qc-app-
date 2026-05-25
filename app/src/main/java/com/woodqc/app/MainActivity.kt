@@ -29,20 +29,18 @@ class MainActivity : ComponentActivity() {
     private var feedbackAudio: FeedbackAudio? = null
     private var cameraAnalyzer: CameraAnalyzer? = null
     private var previewView: PreviewView? = null
-    private var isCameraBound = false
+    private var cameraProvider: ProcessCameraProvider? = null
 
     private var analyzerState by mutableStateOf<CameraAnalyzer.AnalyzerState>(
         CameraAnalyzer.AnalyzerState.Scanning
     )
     private var isUnlocked by mutableStateOf(false)
-
-    // Phase 2: Language toggle state
     private var isHindi by mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
-        if (isGranted) setupCamera()
+        if (isGranted) bindCamera()
         else Toast.makeText(this, "Camera permission required.", Toast.LENGTH_LONG).show()
     }
 
@@ -66,15 +64,15 @@ class MainActivity : ComponentActivity() {
 
             WoodenQCApp(
                 analyzerState = analyzerState,
-                onResumeScan = { cameraAnalyzer?.resumeScan() },
-                onPhotoCapture = { cameraAnalyzer?.triggerPhotoCapture() },
+                onResumeScan = {
+                    cameraAnalyzer?.resumeScan()
+                },
+                onPhotoCapture = {
+                    cameraAnalyzer?.triggerPhotoCapture()
+                },
                 onPreviewViewCreated = { view ->
                     previewView = view
-                    if (ContextCompat.checkSelfPermission(
-                            this, Manifest.permission.CAMERA
-                        ) == PackageManager.PERMISSION_GRANTED
-                    ) setupCamera()
-                    else requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    checkPermissionAndBind()
                 },
                 isHindi = isHindi,
                 onLanguageToggle = { isHindi = !isHindi }
@@ -82,27 +80,46 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun setupCamera() {
-        if (isCameraBound) return
+    private fun checkPermissionAndBind() {
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            bindCamera()
+        } else {
+            requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun bindCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             try {
-                val cameraProvider = cameraProviderFuture.get()
-                val preview = Preview.Builder().build().apply {
-                    setSurfaceProvider(previewView?.surfaceProvider)
-                }
+                cameraProvider = cameraProviderFuture.get()
+
+                val preview = Preview.Builder()
+                    .build()
+                    .apply { setSurfaceProvider(previewView?.surfaceProvider) }
+
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setTargetResolution(Size(640, 480))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                     .build()
-                imageAnalysis.setAnalyzer(cameraExecutor, cameraAnalyzer!!)
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis
+                    .apply { setAnalyzer(cameraExecutor, cameraAnalyzer!!) }
+
+                cameraProvider?.unbindAll()
+                cameraProvider?.bindToLifecycle(
+                    this,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    imageAnalysis
                 )
-                isCameraBound = true
+
+                Log.d("MainActivity", "Camera bound ✅")
+
             } catch (e: Exception) {
-                Log.e("MainActivity", "Camera binding failed: ${e.message}", e)
+                Log.e("MainActivity", "Camera bind failed: ${e.message}", e)
             }
         }, ContextCompat.getMainExecutor(this))
     }
@@ -112,5 +129,6 @@ class MainActivity : ComponentActivity() {
         cameraExecutor.shutdown()
         cameraAnalyzer?.shutdown()
         feedbackAudio?.release()
+        cameraProvider?.unbindAll()
     }
 }

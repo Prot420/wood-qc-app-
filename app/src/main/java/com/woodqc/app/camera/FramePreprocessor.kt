@@ -6,6 +6,13 @@ import java.util.ArrayList
 
 class FramePreprocessor {
 
+    data class OpenCvDefect(
+        val rect: Rect,
+        val type: String,
+        val confidence: Float
+    )
+
+    // ── Noise Filter ─────────────────────────────────────────────────────────
     fun filterSawdustNoise(inputMat: Mat): Mat {
         val destination = Mat()
         Imgproc.GaussianBlur(inputMat, destination, Size(5.0, 5.0), 0.0)
@@ -15,6 +22,126 @@ class FramePreprocessor {
         return destination
     }
 
+    // ── Main Detection Entry Point ────────────────────────────────────────────
+    // Returns all OpenCV-detected defects combined
+    fun detectAllDefects(inputMat: Mat): List<OpenCvDefect> {
+        val allDefects = mutableListOf<OpenCvDefect>()
+        try {
+            allDefects.addAll(detectCracks(inputMat))
+            allDefects.addAll(detectSurfaceHoles(inputMat))
+            allDefects.addAll(detectFungalMold(inputMat))
+        } catch (e: Exception) {
+            // Silent fail — OpenCV is secondary to YOLOv8
+        }
+        return allDefects
+    }
+
+    // ── 1. Crack Detection ────────────────────────────────────────────────────
+    // Uses Canny edge detection + contour analysis
+    // Cracks = long thin dark lines on wood surface
+    fun detectCracks(inputMat: Mat): List<OpenCvDefect> {
+        val results = ArrayList<OpenCvDefect>()
+
+        val grayMat = Mat()
+        Imgproc.cvtColor(inputMat, grayMat, Imgproc.COLOR_RGBA2GRAY)
+
+        // Enhance contrast for better crack visibility
+        val enhanced = Mat()
+        Imgproc.equalizeHist(grayMat, enhanced)
+
+        // Gaussian blur to reduce noise before edge detection
+        val blurred = Mat()
+        Imgproc.GaussianBlur(enhanced, blurred, Size(3.0, 3.0), 0.0)
+
+        // Canny edge detection — tight thresholds for cracks only
+        val edges = Mat()
+        Imgproc.Canny(blurred, edges, 80.0, 200.0)
+
+        // Morphological closing to connect broken crack edges
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+        Imgproc.morphologyEx(edges, edges, Imgproc.MORPH_CLOSE, kernel)
+
+        // Find contours of potential cracks
+        val contours = ArrayList<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(
+            edges, contours, hierarchy,
+            Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
+        )
+
+        for (contour in contours) {
+            val area = Imgproc.contourArea(contour)
+            val rect = Imgproc.boundingRect(contour)
+
+            // Cracks are long and thin
+            val aspectRatio = if (rect.height > 0) rect.width.toDouble() / rect.height else 0.0
+            val isLong = rect.width > 40 || rect.height > 40
+            val isThin = aspectRatio > 3.0 || aspectRatio < 0.33
+
+            if (area > 200.0 && isLong && isThin) {
+                // Additional check: crack should be dark relative to surroundings
+                val roiMat = Mat(grayMat, rect)
+                val meanVal = Core.mean(roiMat).`val`[0]
+                roiMat.release()
+
+                if (meanVal < 100.0) { // Dark region = likely crack
+                    val conf = (area / 2000.0).coerceIn(0.76, 0.92).toFloat()
+                    results.add(OpenCvDefect(rect, "Crack", conf))
+                }
+            }
+            contour.release()
+        }
+
+        grayMat.release(); enhanced.release(); blurred.release()
+        edges.release(); kernel.release(); hierarchy.release()
+
+        return results
+    }
+
+    // ── 2. Surface Hole / Pit Detection ──────────────────────────────────────
+    // Detects knot holes, pits, missing chunks
+    fun detectSurfaceHoles(inputMat: Mat): List<OpenCvDefect> {
+        val results = ArrayList<OpenCvDefect>()
+
+        val grayMat = Mat()
+        Imgproc.cvtColor(inputMat, grayMat, Imgproc.COLOR_RGBA2GRAY)
+
+        // Threshold for dark regions (holes appear as very dark spots)
+        val threshMat = Mat()
+        Imgproc.threshold(grayMat, threshMat, 45.0, 255.0, Imgproc.THRESH_BINARY_INV)
+
+        // Remove thin lines (keep only filled dark regions)
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
+        Imgproc.morphologyEx(threshMat, threshMat, Imgproc.MORPH_OPEN, kernel)
+        Imgproc.morphologyEx(threshMat, threshMat, Imgproc.MORPH_CLOSE, kernel)
+
+        val contours = ArrayList<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(
+            threshMat, contours, hierarchy,
+            Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
+        )
+
+        for (contour in contours) {
+            val area = Imgproc.contourArea(contour)
+            val rect = Imgproc.boundingRect(contour)
+
+            // Holes are roughly circular/square — not too elongated
+            val aspectRatio = if (rect.height > 0) rect.width.toDouble() / rect.height else 0.0
+            val isCircular = aspectRatio in 0.3..3.0
+
+            if (area > 400.0 && isCircular) {
+                val conf = (area / 3000.0).coerceIn(0.76, 0.88).toFloat()
+                results.add(OpenCvDefect(rect, "Surface Hole", conf))
+            }
+            contour.release()
+        }
+
+        grayMat.release(); threshMat.release(); kernel.release(); hierarchy.release()
+        return results
+    }
+
+    // ── 3. Fungal Mold Detection (kept from original — works well) ────────────
     fun isolateFungalAnomalies(inputMat: Mat): List<Rect> {
         val detectedAnomalies = ArrayList<Rect>()
 
@@ -52,7 +179,7 @@ class FramePreprocessor {
 
         for (contour in contours) {
             val area = Imgproc.contourArea(contour)
-            if (area > 350.0) {
+            if (area > 500.0) {
                 val rect = Imgproc.boundingRect(contour)
                 val aspectRatio = rect.width.toDouble() / rect.height.toDouble()
                 if (aspectRatio in 0.25..4.0) {
@@ -67,171 +194,5 @@ class FramePreprocessor {
         combined.release(); hierarchy.release()
 
         return detectedAnomalies
-    }
-
-    // ── Phase 2: Finish & Color Defect Detection ─────────────────────────────
-    // Detects: uneven lacquer, brush marks, color inconsistency
-    // Used on polished/lacquered products like Senses Lifestyle kitchenware
-
-    data class FinishDefect(val rect: Rect, val type: String, val confidence: Float)
-
-    fun detectFinishDefects(inputMat: Mat): List<FinishDefect> {
-        val defects = ArrayList<FinishDefect>()
-
-        try {
-            defects.addAll(detectColorInconsistency(inputMat))
-            defects.addAll(detectBrushMarks(inputMat))
-        } catch (e: Exception) {
-            // Silent fail — finish detection is secondary
-        }
-
-        return defects
-    }
-
-    // Detects patches where color deviates significantly from dominant wood color
-    private fun detectColorInconsistency(inputMat: Mat): List<FinishDefect> {
-        val results = ArrayList<FinishDefect>()
-
-        val labMat = Mat()
-        Imgproc.cvtColor(inputMat, labMat, Imgproc.COLOR_RGBA2RGB)
-        Imgproc.cvtColor(labMat, labMat, Imgproc.COLOR_RGB2Lab)
-
-        // Split into L, a, b channels
-        val channels = ArrayList<Mat>()
-        Core.split(labMat, channels)
-
-        if (channels.size < 3) {
-            labMat.release()
-            channels.forEach { it.release() }
-            return results
-        }
-
-        val aChannel = channels[1] // Color channel a (green-red)
-        val bChannel = channels[2] // Color channel b (blue-yellow)
-
-        // Calculate mean and std dev of color channels
-        val meanA = Core.mean(aChannel)
-        val meanB = Core.mean(bChannel)
-
-        val stdA = MatOfDouble()
-        val stdB = MatOfDouble()
-        val tmpMean = MatOfDouble()
-        Core.meanStdDev(aChannel, tmpMean, stdA)
-        Core.meanStdDev(bChannel, tmpMean, stdB)
-
-        // Detect pixels that deviate significantly from mean color (2.5 sigma threshold)
-        val thresholdA = stdA.get(0, 0)[0] * 2.5
-        val thresholdB = stdB.get(0, 0)[0] * 2.5
-
-        val maskA = Mat()
-        val maskB = Mat()
-        val colorMask = Mat()
-
-        Core.inRange(
-            aChannel,
-            Scalar(meanA.`val`[0] - thresholdA),
-            Scalar(meanA.`val`[0] + thresholdA),
-            maskA
-        )
-        Core.inRange(
-            bChannel,
-            Scalar(meanB.`val`[0] - thresholdB),
-            Scalar(meanB.`val`[0] + thresholdB),
-            maskB
-        )
-
-        // Pixels OUTSIDE normal range = color inconsistency
-        Core.bitwise_not(maskA, maskA)
-        Core.bitwise_not(maskB, maskB)
-        Core.bitwise_or(maskA, maskB, colorMask)
-
-        // Morphological cleanup
-        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(7.0, 7.0))
-        Imgproc.morphologyEx(colorMask, colorMask, Imgproc.MORPH_CLOSE, kernel)
-        Imgproc.morphologyEx(colorMask, colorMask, Imgproc.MORPH_OPEN, kernel)
-
-        val contours = ArrayList<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(
-            colorMask, contours, hierarchy,
-            Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
-        )
-
-        for (contour in contours) {
-            val area = Imgproc.contourArea(contour)
-            if (area > 800.0) {
-                val rect = Imgproc.boundingRect(contour)
-                // Confidence based on area size
-                val conf = (area / 5000.0).coerceIn(0.7, 0.95).toFloat()
-                results.add(FinishDefect(rect, "Color Inconsistency", conf))
-            }
-            contour.release()
-        }
-
-        labMat.release()
-        channels.forEach { it.release() }
-        maskA.release(); maskB.release(); colorMask.release()
-        kernel.release(); hierarchy.release()
-        stdA.release(); stdB.release(); tmpMean.release()
-
-        return results
-    }
-
-    // Detects directional brush marks on lacquered surfaces
-    private fun detectBrushMarks(inputMat: Mat): List<FinishDefect> {
-        val results = ArrayList<FinishDefect>()
-
-        val grayMat = Mat()
-        Imgproc.cvtColor(inputMat, grayMat, Imgproc.COLOR_RGBA2GRAY)
-
-        // Apply Sobel in X direction — brush marks show as strong horizontal edges
-        val sobelX = Mat()
-        val sobelY = Mat()
-        Imgproc.Sobel(grayMat, sobelX, CvType.CV_32F, 1, 0, 3)
-        Imgproc.Sobel(grayMat, sobelY, CvType.CV_32F, 0, 1, 3)
-
-        // Convert to absolute values
-        Core.convertScaleAbs(sobelX, sobelX)
-        Core.convertScaleAbs(sobelY, sobelY)
-
-        // Strong X edges with weak Y edges = horizontal brush marks
-        val brushMask = Mat()
-        Core.subtract(sobelX, sobelY, brushMask)
-
-        // Threshold
-        val threshMask = Mat()
-        Imgproc.threshold(brushMask, threshMask, 60.0, 255.0, Imgproc.THRESH_BINARY)
-
-        // Convert to 8-bit
-        val threshMask8U = Mat()
-        threshMask.convertTo(threshMask8U, CvType.CV_8U)
-
-        // Morphological operations to connect nearby marks
-        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(15.0, 3.0))
-        Imgproc.morphologyEx(threshMask8U, threshMask8U, Imgproc.MORPH_CLOSE, kernel)
-
-        val contours = ArrayList<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(
-            threshMask8U, contours, hierarchy,
-            Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
-        )
-
-        for (contour in contours) {
-            val area = Imgproc.contourArea(contour)
-            val rect = Imgproc.boundingRect(contour)
-            // Brush marks are wide and thin
-            val aspectRatio = rect.width.toDouble() / rect.height.toDouble()
-            if (area > 600.0 && aspectRatio > 3.0) {
-                results.add(FinishDefect(rect, "Brush Mark", 0.78f))
-            }
-            contour.release()
-        }
-
-        grayMat.release(); sobelX.release(); sobelY.release()
-        brushMask.release(); threshMask.release(); threshMask8U.release()
-        kernel.release(); hierarchy.release()
-
-        return results
     }
 }

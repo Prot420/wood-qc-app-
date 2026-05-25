@@ -41,23 +41,25 @@ class CameraAnalyzer(
     private val analyzerExecutor = Executors.newSingleThreadExecutor()
     private val analyzerDispatcher = analyzerExecutor.asCoroutineDispatcher()
     private val analyzerScope = CoroutineScope(SupervisorJob() + analyzerDispatcher)
-    private val isProcessingFrame = AtomicBoolean(false)
 
-    // Phase 1: photo capture flag
+    // Use AtomicBoolean for thread-safe pause state
+    private val isAnalysisPausedAtomic = AtomicBoolean(false)
+    private val isProcessingFrame = AtomicBoolean(false)
     private val capturePhotoFlag = AtomicBoolean(false)
 
-    @Volatile
-    var isAnalysisPaused = false
-        private set
+    // Track frozen bitmap to avoid memory leaks
+    private var currentFrozenBitmap: Bitmap? = null
 
     private var stableFrameCount = 0
-    private val requiredStableFrames = 60
+    private val requiredStableFrames = 45 // Slightly faster — 45 frames instead of 60
+
+    val isAnalysisPaused: Boolean get() = isAnalysisPausedAtomic.get()
 
     init {
         if (OpenCVLoader.initDebug()) {
             isOpenCvInitialized = true
             preprocessor = FramePreprocessor()
-            Log.i("CameraAnalyzer", "OpenCV loaded successfully.")
+            Log.i("CameraAnalyzer", "OpenCV loaded ✅")
         } else {
             Log.e("CameraAnalyzer", "OpenCV init failed!")
         }
@@ -65,15 +67,34 @@ class CameraAnalyzer(
     }
 
     fun triggerPhotoCapture() {
-        isAnalysisPaused = false
+        isAnalysisPausedAtomic.set(false)
         capturePhotoFlag.set(true)
         stableFrameCount = 0
+    }
+
+    fun resumeScan() {
+        // Clean up previous frozen bitmap
+        currentFrozenBitmap?.let {
+            if (!it.isRecycled) it.recycle()
+        }
+        currentFrozenBitmap = null
+
+        stableFrameCount = 0
+        isAnalysisPausedAtomic.set(false)
+
+        // Notify UI immediately
+        analyzerScope.launch {
+            withContext(Dispatchers.Main) {
+                onStateChanged(AnalyzerState.Scanning)
+            }
+        }
     }
 
     override fun analyze(image: ImageProxy) {
         val isPhotoCapture = capturePhotoFlag.getAndSet(false)
 
-        if (!isPhotoCapture && (isAnalysisPaused || isProcessingFrame.get())) {
+        // Skip frame if paused or already processing
+        if (!isPhotoCapture && (isAnalysisPausedAtomic.get() || isProcessingFrame.get())) {
             image.close()
             return
         }
@@ -87,172 +108,221 @@ class CameraAnalyzer(
             var filteredBitmap: Bitmap? = null
 
             try {
-                bitmap = image.toBitmap()
+                bitmap = image.toBitmap() ?: run {
+                    isProcessingFrame.set(false)
+                    image.close()
+                    return@launch
+                }
 
-                if (bitmap != null) {
-                    val finalDetections = mutableListOf<WoodDefectDetector.DetectionResult>()
+                val finalDetections = mutableListOf<WoodDefectDetector.DetectionResult>()
 
-                    if (isOpenCvInitialized && preprocessor != null) {
-                        srcMat = Mat()
-                        Utils.bitmapToMat(bitmap, srcMat)
-                        cleanMat = preprocessor!!.filterSawdustNoise(srcMat)
+                if (isOpenCvInitialized && preprocessor != null) {
+                    // ── OpenCV Pipeline ──────────────────────────────────
+                    srcMat = Mat()
+                    Utils.bitmapToMat(bitmap, srcMat)
+                    cleanMat = preprocessor!!.filterSawdustNoise(srcMat)
 
-                        filteredBitmap = Bitmap.createBitmap(
-                            bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888
+                    filteredBitmap = Bitmap.createBitmap(
+                        bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888
+                    )
+                    Utils.matToBitmap(cleanMat, filteredBitmap)
+
+                    // YOLOv8 on filtered frame
+                    val yoloResults = detector?.detectDefects(filteredBitmap) ?: emptyList()
+                    finalDetections.addAll(yoloResults)
+
+                    // OpenCV crack + hole detection
+                    val opencvDefects = preprocessor!!.detectAllDefects(cleanMat)
+                    for (d in opencvDefects) {
+                        val rectF = RectF(
+                            d.rect.x.toFloat(), d.rect.y.toFloat(),
+                            (d.rect.x + d.rect.width).toFloat(),
+                            (d.rect.y + d.rect.height).toFloat()
                         )
-                        Utils.matToBitmap(cleanMat, filteredBitmap)
-
-                        // YOLOv8 detections
-                        finalDetections.addAll(detector?.detectDefects(filteredBitmap) ?: emptyList())
-
-                        // OpenCV fungal detection
-                        val fungalRects = preprocessor!!.isolateFungalAnomalies(cleanMat)
-                        for (rect in fungalRects) {
-                            val rectF = RectF(
-                                rect.x.toFloat(), rect.y.toFloat(),
-                                (rect.x + rect.width).toFloat(), (rect.y + rect.height).toFloat()
-                            )
-                            finalDetections.add(
-                                WoodDefectDetector.DetectionResult("Fungal Mold", 0.80f, rectF)
-                            )
-                        }
-
-                        // Phase 2: Finish/Color defect detection
-                        val finishDefects = preprocessor!!.detectFinishDefects(cleanMat)
-                        for (fd in finishDefects) {
-                            val rectF = RectF(
-                                fd.rect.x.toFloat(), fd.rect.y.toFloat(),
-                                (fd.rect.x + fd.rect.width).toFloat(),
-                                (fd.rect.y + fd.rect.height).toFloat()
-                            )
-                            finalDetections.add(
-                                WoodDefectDetector.DetectionResult(fd.type, fd.confidence, rectF)
-                            )
-                        }
-                    } else {
-                        finalDetections.addAll(detector?.detectDefects(bitmap) ?: emptyList())
+                        finalDetections.add(
+                            WoodDefectDetector.DetectionResult(d.type, d.confidence, rectF)
+                        )
                     }
 
-                    val criticalDefect = finalDetections.firstOrNull { it.confidence >= 0.75f }
+                    // OpenCV fungal detection
+                    val fungalRects = preprocessor!!.isolateFungalAnomalies(cleanMat)
+                    for (rect in fungalRects) {
+                        val rectF = RectF(
+                            rect.x.toFloat(), rect.y.toFloat(),
+                            (rect.x + rect.width).toFloat(),
+                            (rect.y + rect.height).toFloat()
+                        )
+                        finalDetections.add(
+                            WoodDefectDetector.DetectionResult("Fungal Mold", 0.80f, rectF)
+                        )
+                    }
 
-                    if (criticalDefect != null) {
-                        isAnalysisPaused = true
-                        stableFrameCount = 0
+                } else {
+                    // Fallback: YOLOv8 only without OpenCV
+                    val yoloResults = detector?.detectDefects(bitmap) ?: emptyList()
+                    finalDetections.addAll(yoloResults)
+                }
 
-                        val workingBitmap = (filteredBitmap ?: bitmap).copy(Bitmap.Config.ARGB_8888, true)
-                        drawDefectAnnotations(workingBitmap, finalDetections)
+                // Find highest confidence defect above threshold
+                val criticalDefect = finalDetections
+                    .filter { it.confidence >= 0.76f }
+                    .maxByOrNull { it.confidence }
 
-                        val savedPath = PhotoSaver.saveDefectPhoto(context, workingBitmap, criticalDefect.label)
+                if (criticalDefect != null) {
+                    // ── REJECT ───────────────────────────────────────────
+                    isAnalysisPausedAtomic.set(true)
+                    stableFrameCount = 0
 
-                        withContext(Dispatchers.Main) {
-                            onStateChanged(
-                                AnalyzerState.Reject(
-                                    defectType = criticalDefect.label,
-                                    confidence = criticalDefect.confidence,
-                                    frozenImage = workingBitmap,
-                                    savedPhotoPath = savedPath
-                                )
+                    // Create annotated frozen frame
+                    val sourceBitmap = filteredBitmap ?: bitmap
+                    val frozenBitmap = sourceBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                    drawDefectAnnotations(frozenBitmap, finalDetections.filter { it.confidence >= 0.76f })
+
+                    // Keep reference for cleanup
+                    currentFrozenBitmap = frozenBitmap
+
+                    // Save photo to disk
+                    val savedPath = PhotoSaver.saveDefectPhoto(
+                        context, frozenBitmap, criticalDefect.label
+                    )
+
+                    // Log to DB
+                    val logId = logResult("REJECT", criticalDefect.label, criticalDefect.confidence, savedPath)
+
+                    // Update UI
+                    withContext(Dispatchers.Main) {
+                        onStateChanged(
+                            AnalyzerState.Reject(
+                                defectType = criticalDefect.label,
+                                confidence = criticalDefect.confidence,
+                                frozenImage = frozenBitmap,
+                                savedPhotoPath = savedPath
                             )
+                        )
+                    }
+
+                    feedbackAudio.playRejectBeep()
+                    feedbackAudio.speak("Reject. ${criticalDefect.label} detected.")
+
+                } else {
+                    // ── PASS logic ────────────────────────────────────────
+                    if (isPhotoCapture) {
+                        // Photo mode: single frame = immediate result
+                        isAnalysisPausedAtomic.set(true)
+                        val logId = logResult("PASS", "None", 1.0f, "")
+                        withContext(Dispatchers.Main) {
+                            onStateChanged(AnalyzerState.Pass(logId))
                         }
-
-                        feedbackAudio.playRejectBeep()
-                        feedbackAudio.speak("Reject. ${criticalDefect.label} detected.")
-
-                        logResult("REJECT", criticalDefect.label, criticalDefect.confidence, savedPath)
+                        feedbackAudio.playPassBeep()
+                        feedbackAudio.speak("Pass")
 
                     } else {
-                        if (isPhotoCapture) {
-                            isAnalysisPaused = true
-                            feedbackAudio.playPassBeep()
-                            feedbackAudio.speak("Pass")
+                        // Video mode: need stable frames before PASS
+                        stableFrameCount++
+                        if (stableFrameCount >= requiredStableFrames) {
+                            isAnalysisPausedAtomic.set(true)
+                            stableFrameCount = 0
                             val logId = logResult("PASS", "None", 1.0f, "")
                             withContext(Dispatchers.Main) {
                                 onStateChanged(AnalyzerState.Pass(logId))
                             }
-                        } else {
-                            stableFrameCount++
-                            if (stableFrameCount >= requiredStableFrames) {
-                                isAnalysisPaused = true
-                                stableFrameCount = 0
-                                feedbackAudio.playPassBeep()
-                                feedbackAudio.speak("Pass")
-                                val logId = logResult("PASS", "None", 1.0f, "")
-                                withContext(Dispatchers.Main) {
-                                    onStateChanged(AnalyzerState.Pass(logId))
-                                }
-                            }
+                            feedbackAudio.playPassBeep()
+                            feedbackAudio.speak("Pass")
                         }
                     }
                 }
+
             } catch (e: Exception) {
                 Log.e("CameraAnalyzer", "Analysis error: ${e.message}", e)
             } finally {
+                // Clean up OpenCV matrices
                 srcMat?.release()
                 cleanMat?.release()
-                filteredBitmap?.recycle()
+
+                // Recycle filtered bitmap (NOT the frozen bitmap — UI still uses it)
+                if (filteredBitmap != null && filteredBitmap != currentFrozenBitmap) {
+                    filteredBitmap.recycle()
+                }
+
+                // Recycle original bitmap
                 bitmap?.recycle()
+
                 isProcessingFrame.set(false)
                 image.close()
             }
         }
     }
 
-    fun resumeScan() {
-        stableFrameCount = 0
-        isAnalysisPaused = false
-        onStateChanged(AnalyzerState.Scanning)
-    }
-
-    private fun drawDefectAnnotations(bitmap: Bitmap, detections: List<WoodDefectDetector.DetectionResult>) {
+    private fun drawDefectAnnotations(
+        bitmap: Bitmap,
+        detections: List<WoodDefectDetector.DetectionResult>
+    ) {
         val canvas = Canvas(bitmap)
+
         val boxPaint = Paint().apply {
             color = Color.RED
             style = Paint.Style.STROKE
-            strokeWidth = 6.0f
+            strokeWidth = 5.0f
             isAntiAlias = true
         }
         val bgPaint = Paint().apply {
-            color = Color.parseColor("#CCFF0000")
+            color = Color.parseColor("#CCFF1744")
             style = Paint.Style.FILL
         }
         val textPaint = Paint().apply {
             color = Color.WHITE
-            textSize = 28.0f
+            textSize = 26.0f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
+
         for (detection in detections) {
             val box = detection.boundingBox
             canvas.drawRect(box, boxPaint)
-            val pct = (detection.confidence * 100).toInt()
-            val label = "${detection.label} ($pct%)"
+
+            val label = "${detection.label} (${(detection.confidence * 100).toInt()}%)"
             val textBounds = android.graphics.Rect()
             textPaint.getTextBounds(label, 0, label.length, textBounds)
-            val labelBg = android.graphics.RectF(
-                box.left, box.top - textBounds.height() - 15f,
-                box.left + textBounds.width() + 20f, box.top
+
+            val labelBg = RectF(
+                box.left,
+                (box.top - textBounds.height() - 12f).coerceAtLeast(0f),
+                box.left + textBounds.width() + 18f,
+                box.top
             )
             canvas.drawRect(labelBg, bgPaint)
-            canvas.drawText(label, box.left + 10f, box.top - 10f, textPaint)
+            canvas.drawText(label, box.left + 8f, box.top - 8f, textPaint)
         }
     }
 
-    private fun logResult(verdict: String, defectType: String, confidence: Float, photoPath: String): Long =
-        runBlocking {
+    private suspend fun logResult(
+        verdict: String,
+        defectType: String,
+        confidence: Float,
+        photoPath: String
+    ): Long {
+        return try {
             val log = ItemLog(
                 category = "General",
-                woodType = "Auto-Detect",
+                woodType = "Auto",
                 verdict = verdict,
                 defectType = defectType,
                 confidence = confidence,
                 photoPath = photoPath
             )
             db.itemLogDao().insertLog(log)
+        } catch (e: Exception) {
+            Log.e("CameraAnalyzer", "DB log failed: ${e.message}")
+            -1L
         }
+    }
 
     fun shutdown() {
         analyzerScope.cancel()
         analyzerExecutor.shutdown()
         detector?.release()
+        currentFrozenBitmap?.let {
+            if (!it.isRecycled) it.recycle()
+        }
     }
 }
