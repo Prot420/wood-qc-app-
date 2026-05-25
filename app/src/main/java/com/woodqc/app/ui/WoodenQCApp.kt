@@ -67,7 +67,7 @@ fun WoodenQCApp(
     onWoodTypeSelected: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val db = remember { AppDatabase.getDatabase(context) }
+    val db = remember { DatabaseFactory.getDatabase(context) }
     val scope = rememberCoroutineScope()
 
     val logs by db.itemLogDao().getAllLogs().collectAsState(initial = emptyList())

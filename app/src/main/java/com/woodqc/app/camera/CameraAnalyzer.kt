@@ -35,7 +35,7 @@ class CameraAnalyzer(
         ) : AnalyzerState()
     }
 
-    private val db = AppDatabase.getDatabase(context)
+    private val db = DatabaseFactory.getDatabase(context)
     private var detector: WoodDefectDetector? = null
     private var preprocessor: FramePreprocessor? = null
     private var isOpenCvInitialized = false
