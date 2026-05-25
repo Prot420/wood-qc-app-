@@ -8,7 +8,7 @@ import android.os.SystemClock
 import android.util.Log
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.nnapi.NnapiDelegate
+import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.io.FileInputStream
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -25,7 +25,7 @@ class WoodDefectDetector(private val context: Context) {
 
     private var interpreter: Interpreter? = null
     private var gpuDelegate: GpuDelegate? = null
-    private var nnapiDelegate: NnapiDelegate? = null
+    private var nnapiDelegate: NnApiDelegate? = null
     private var isModelLoaded = false
 
     private val inputImageWidth = 320 // YOLOv8 standard quantized input dimension
@@ -59,7 +59,7 @@ class WoodDefectDetector(private val context: Context) {
             } catch (e: Exception) {
                 Log.w("WoodDefectDetector", "GPU Delegate instantiation failed, trying NNAPI...")
                 try {
-                    nnapiDelegate = NnapiDelegate()
+                    nnapiDelegate = NnApiDelegate()
                     options.addDelegate(nnapiDelegate)
                     Log.d("WoodDefectDetector", "NNAPI Delegate added successfully.")
                 } catch (e2: Exception) {

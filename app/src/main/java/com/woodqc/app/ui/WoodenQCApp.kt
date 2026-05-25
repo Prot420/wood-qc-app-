@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import com.woodqc.app.camera.CameraAnalyzer
+import com.woodqc.app.database.DatabaseFactory
 import com.woodqc.app.database.AppDatabase
 import com.woodqc.app.database.ItemLog
 import com.woodqc.app.utils.AqlCalculator
@@ -280,7 +281,7 @@ fun WoodenQCApp(
                                     .frozenImage.asImageBitmap(),
                                 contentDescription = "Defect Snapshot",
                                 modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.FIT
+                                contentScale = ContentScale.Fit
                             )
                         }
 

@@ -6,7 +6,7 @@ import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import com.woodqc.app.audio.FeedbackAudio
-import com.woodqc.app.database.AppDatabase
+import com.woodqc.app.database.DatabaseFactory
 import com.woodqc.app.database.ItemLog
 import com.woodqc.app.utils.PhotoSaver
 import kotlinx.coroutines.*
