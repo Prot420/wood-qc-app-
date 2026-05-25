@@ -29,7 +29,7 @@ class FramePreprocessor {
         try {
             allDefects.addAll(detectCracks(inputMat))
             allDefects.addAll(detectSurfaceHoles(inputMat))
-            allDefects.addAll(detectFungalMold(inputMat))
+            // Fungal handled separately in CameraAnalyzer via isolateFungalAnomalies
         } catch (e: Exception) {
             // Silent fail — OpenCV is secondary to YOLOv8
         }
