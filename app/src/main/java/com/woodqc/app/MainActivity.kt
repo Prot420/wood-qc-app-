@@ -31,24 +31,19 @@ class MainActivity : ComponentActivity() {
     private var previewView: PreviewView? = null
     private var isCameraBound = false
 
-    private var selectedCategory by mutableStateOf("Salad Bowl")
-    private var selectedWoodType by mutableStateOf("Mango")
     private var analyzerState by mutableStateOf<CameraAnalyzer.AnalyzerState>(
         CameraAnalyzer.AnalyzerState.Scanning
     )
-
-    // Phase 1: PIN auth state
     private var isUnlocked by mutableStateOf(false)
+
+    // Phase 2: Language toggle state
+    private var isHindi by mutableStateOf(false)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) setupCamera()
-        else Toast.makeText(
-            this,
-            "Camera permission required for wood inspection.",
-            Toast.LENGTH_LONG
-        ).show()
+        else Toast.makeText(this, "Camera permission required.", Toast.LENGTH_LONG).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,41 +55,29 @@ class MainActivity : ComponentActivity() {
         cameraAnalyzer = CameraAnalyzer(
             context = this,
             feedbackAudio = feedbackAudio!!,
-            selectedCategory = { selectedCategory },
-            selectedWoodType = { selectedWoodType },
             onStateChanged = { newState -> analyzerState = newState }
         )
 
         setContent {
-            // ── Phase 1: Show PIN screen until authenticated ──────────────
             if (!isUnlocked) {
                 PinLockScreen(onUnlocked = { isUnlocked = true })
                 return@setContent
             }
-            // ─────────────────────────────────────────────────────────────
 
             WoodenQCApp(
                 analyzerState = analyzerState,
                 onResumeScan = { cameraAnalyzer?.resumeScan() },
-                onPhotoCapture = {
-                    // Phase 1: Trigger single-frame photo capture
-                    cameraAnalyzer?.triggerPhotoCapture()
-                },
+                onPhotoCapture = { cameraAnalyzer?.triggerPhotoCapture() },
                 onPreviewViewCreated = { view ->
                     previewView = view
                     if (ContextCompat.checkSelfPermission(
                             this, Manifest.permission.CAMERA
                         ) == PackageManager.PERMISSION_GRANTED
-                    ) {
-                        setupCamera()
-                    } else {
-                        requestPermissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
+                    ) setupCamera()
+                    else requestPermissionLauncher.launch(Manifest.permission.CAMERA)
                 },
-                selectedCategory = selectedCategory,
-                onCategorySelected = { selectedCategory = it },
-                selectedWoodType = selectedWoodType,
-                onWoodTypeSelected = { selectedWoodType = it }
+                isHindi = isHindi,
+                onLanguageToggle = { isHindi = !isHindi }
             )
         }
     }
@@ -105,26 +88,19 @@ class MainActivity : ComponentActivity() {
         cameraProviderFuture.addListener({
             try {
                 val cameraProvider = cameraProviderFuture.get()
-
                 val preview = Preview.Builder().build().apply {
                     setSurfaceProvider(previewView?.surfaceProvider)
                 }
-
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setTargetResolution(Size(640, 480))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                 imageAnalysis.setAnalyzer(cameraExecutor, cameraAnalyzer!!)
-
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
-                    this,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    imageAnalysis
+                    this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis
                 )
                 isCameraBound = true
-                Log.d("MainActivity", "CameraX bound successfully.")
             } catch (e: Exception) {
                 Log.e("MainActivity", "Camera binding failed: ${e.message}", e)
             }
