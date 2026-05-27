@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
     private var cameraProvider: ProcessCameraProvider? = null
 
     private var analyzerState by mutableStateOf<CameraAnalyzer.AnalyzerState>(
-        CameraAnalyzer.AnalyzerState.Scanning
+        CameraAnalyzer.AnalyzerState.Idle
     )
     private var isUnlocked by mutableStateOf(false)
     private var isHindi by mutableStateOf(false)
@@ -64,12 +64,9 @@ class MainActivity : ComponentActivity() {
 
             WoodenQCApp(
                 analyzerState = analyzerState,
-                onResumeScan = {
-                    cameraAnalyzer?.resumeScan()
-                },
-                onPhotoCapture = {
-                    cameraAnalyzer?.triggerPhotoCapture()
-                },
+                onStartRecording = { cameraAnalyzer?.startRecording() },
+                onStopRecording = { cameraAnalyzer?.stopRecording() },
+                onResetToIdle = { cameraAnalyzer?.resetToIdle() },
                 onPreviewViewCreated = { view ->
                     previewView = view
                     checkPermissionAndBind()
@@ -92,10 +89,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun bindCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        cameraProviderFuture.addListener({
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
             try {
-                cameraProvider = cameraProviderFuture.get()
+                cameraProvider = future.get()
 
                 val preview = Preview.Builder()
                     .build()
